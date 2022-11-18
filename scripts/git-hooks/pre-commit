@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+if golangci-lint run -eq 1; then
+  printf "Linting failed. Please fix errors before commiting."
+  exit 1
+fi
+
+exit 0
