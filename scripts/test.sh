@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 
 set -o errexit
 set -o nounset
 
 echo ">> Running unit tests..."
-go test ./internal/...
+go test ./...
 
 

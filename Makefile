@@ -13,7 +13,7 @@ default: help
 
 .PHONY: docker-dev
 docker-dev: ## Builds the development docker image.
-	IMAGE=juggler-dev VERSION=${VERSION} DOCKER_FILE=Dockerfile.dev ./scripts/build-image.sh
+	IMAGE=juggler-dev VERSION=${VERSION} DOCKER_FILE=Dockerfile ./scripts/build-image.sh
 
 .PHONY: build
 build: ## Builds the production binary for linux amd64
