@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/pavisalavisa/juggler/internal/config"
+	"github.com/pavisalavisa/juggler/internal/proxy"
 	"github.com/rs/zerolog/hlog"
 	"github.com/rs/zerolog/log"
 )
@@ -68,6 +69,9 @@ func (s *JugglerServer) router(cfg *config.Config) chi.Router {
 	withLogger(r)
 	r.Get("/status", s.statusHandler)
 
+	proxy := NewProxyService(proxy.NewProxy(proxy.NoOpCaller{}))
+
+	r.Handle("/", proxy.proxyHandler())
 	return r
 }
 
