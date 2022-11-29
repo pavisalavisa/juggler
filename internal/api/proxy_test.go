@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,10 +16,8 @@ import (
 )
 
 const (
-	validJsonReq     = `{"message":"This is a valid JSON"}`
-	nonJsonReq       = `n^L<AD>in^M<95><DE>·<B6>e<A3>"T<D2>a<FA>b<BB>=<F0><E1>"<9B><B7>^<BA><DC>`
-	mainService      = "api.main.com"
-	secondaryService = "api.secondary.com"
+	validJsonReq = `{"message":"This is a valid JSON"}`
+	nonJsonReq   = `n^L<AD>in^M<95><DE>·<B6>e<A3>"T<D2>a<FA>b<BB>=<F0><E1>"<9B><B7>^<BA><DC>`
 )
 
 func TestProxy_AnyMethod_ShouldCallBothServices(t *testing.T) {
@@ -83,7 +82,6 @@ func TestProxy_AnyMethod_ShouldCallBothServices(t *testing.T) {
 			p.ProxyHttpCall(w, r)
 
 			// assert that both services were called
-
 			calls := c.calls
 			require.Len(t, calls, 2, "expected 2 calls to be performed")
 			require.Equal(t, tC.target, c.calls[0].URL.Path)
@@ -104,13 +102,11 @@ func TestProxy_AnyRequestBody_ShouldProxyCalls(t *testing.T) {
 
 	// assert that both services were called
 	require.Len(t, c.calls, 2, "expected 2 calls to be performed")
-	callBody, _ := c.calls[0].GetBody()
-	bodyBytes, _ := io.ReadAll(callBody)
-
+	bodyBytes, _ := io.ReadAll(c.calls[0].Body)
 	require.Equal(t, []byte(nonJsonReq), bodyBytes, "first call should have unaltered body")
 
-	callBody, _ = c.calls[1].GetBody()
-	bodyBytes, _ = io.ReadAll(callBody)
+	bodyBytes, err := io.ReadAll(c.calls[1].Body)
+	require.NoError(t, err, "no error reading response body")
 	require.Equal(t, []byte(nonJsonReq), bodyBytes, "second call should have unaltered body")
 }
 
@@ -120,18 +116,32 @@ func TestProxy_ShouldReturnMainServiceResponse(t *testing.T) {
 	w := httptest.NewRecorder()
 	c := &mockCaller{}
 	p := fixtureProxy(c)
+
+	mainSrvRes := []byte("MAIN SERVICE RESPONSE!")
+
+	c.onCall = func(r *http.Request) (<-chan *http.Response, <-chan error) {
+		resCh, errCh := make(chan *http.Response, 1), make(chan error, 1)
+
+		if r.URL.Host == proxy.MainServiceApi {
+			resCh <- &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBuffer(mainSrvRes))}
+		} else {
+			resCh <- &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBuffer([]byte("NOK!")))}
+		}
+
+		close(resCh)
+		close(errCh)
+
+		return resCh, errCh
+	}
+
 	// act
 	p.ProxyHttpCall(w, r)
 
 	// assert
-	mainSrvBody, _ := c.calls[0].GetBody()
-	mainSrvRes, _ := io.ReadAll(mainSrvBody)
-
 	proxyRes, err := io.ReadAll(w.Body)
 
 	require.NoError(t, err, "reading proxy request should not return an error")
-
-	require.Equal(t, proxyRes, mainSrvRes, "main service response should be returned by the proxy")
+	require.Equal(t, mainSrvRes, proxyRes, "main service response should be returned by the proxy")
 }
 
 func TestProxy_ShouldReturnMainServiceHeaders(t *testing.T) {
@@ -140,14 +150,39 @@ func TestProxy_ShouldReturnMainServiceHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	c := &mockCaller{}
 	p := fixtureProxy(c)
+
+	mainHeaders := http.Header{"Main-Header": {"YES"}}
+
+	c.onCall = func(r *http.Request) (<-chan *http.Response, <-chan error) {
+		resCh, errCh := make(chan *http.Response, 1), make(chan error, 1)
+
+		if r.URL.Host == proxy.MainServiceApi {
+			resCh <- &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewBuffer([]byte("OK!"))),
+				Header:     mainHeaders,
+			}
+		} else {
+			resCh <- &http.Response{
+				StatusCode: 400,
+				Body:       io.NopCloser(bytes.NewBuffer([]byte("NOK!"))),
+				Header:     http.Header{"SECONDARY-HEADER": {"NOPE!"}},
+			}
+		}
+
+		close(resCh)
+		close(errCh)
+
+		return resCh, errCh
+	}
+
 	// act
 	p.ProxyHttpCall(w, r)
 
 	// assert
-	mainSrvHeaders := c.calls[0].Header
 	proxyHeaders := w.Result().Header
-
-	require.Equal(t, mainSrvHeaders, proxyHeaders, "main service response headers should be returned by the proxy")
+	require.Equal(t, mainHeaders, proxyHeaders, "main service response headers should be returned by the proxy")
+	require.Equal(t, 200, w.Result().StatusCode, "main service status code should be returned by the proxy")
 }
 
 func TestProxy_MainServiceCallFail_ShouldReturnInternalServerError(t *testing.T) {
@@ -158,11 +193,16 @@ func TestProxy_MainServiceCallFail_ShouldReturnInternalServerError(t *testing.T)
 	p := fixtureProxy(c)
 
 	c.onCall = func(r *http.Request) (<-chan *http.Response, <-chan error) {
-		resCh, errCh := make(chan *http.Response), make(chan error)
+		resCh, errCh := make(chan *http.Response, 1), make(chan error, 1)
 
-		if r.URL.Host == mainService {
+		if r.URL.Host == proxy.MainServiceApi {
 			errCh <- fmt.Errorf("Something went wrong calling the main service")
-
+		} else {
+			resCh <- &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewBuffer([]byte("NOK!"))),
+				Header:     http.Header{"SECONDARY-HEADER": {"NOPE!"}},
+			}
 		}
 
 		close(resCh)
@@ -179,7 +219,6 @@ func TestProxy_MainServiceCallFail_ShouldReturnInternalServerError(t *testing.T)
 }
 
 func TestProxy_SecondaryServiceFail_ShouldNotFail(t *testing.T) {
-
 	// arrange
 	r := httptest.NewRequest("POST", "/any", strings.NewReader(nonJsonReq))
 	w := httptest.NewRecorder()
@@ -187,11 +226,16 @@ func TestProxy_SecondaryServiceFail_ShouldNotFail(t *testing.T) {
 	p := fixtureProxy(c)
 
 	c.onCall = func(r *http.Request) (<-chan *http.Response, <-chan error) {
-		resCh, errCh := make(chan *http.Response), make(chan error)
+		resCh, errCh := make(chan *http.Response, 1), make(chan error, 1)
 
-		if r.URL.Host == secondaryService {
+		if r.URL.Host == proxy.SecondaryServiceApi {
 			errCh <- fmt.Errorf("Something went wrong calling the main service")
-
+		} else {
+			resCh <- &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewBuffer([]byte("OK!"))),
+				Header:     http.Header{"Main-Header": {"YES"}},
+			}
 		}
 
 		close(resCh)
@@ -208,7 +252,6 @@ func TestProxy_SecondaryServiceFail_ShouldNotFail(t *testing.T) {
 }
 
 func TestProxy_SecondaryServiceHanging_ShouldReturnMainResponseImmediatelly(t *testing.T) {
-
 	// arrange
 	r := httptest.NewRequest("POST", "/any", strings.NewReader(nonJsonReq))
 	w := httptest.NewRecorder()
@@ -216,12 +259,19 @@ func TestProxy_SecondaryServiceHanging_ShouldReturnMainResponseImmediatelly(t *t
 	p := fixtureProxy(c)
 
 	c.onCall = func(r *http.Request) (<-chan *http.Response, <-chan error) {
-		resCh, errCh := make(chan *http.Response), make(chan error)
+		resCh, errCh := make(chan *http.Response, 1), make(chan error, 1)
 
-		if r.URL.Host == secondaryService {
-			errCh <- fmt.Errorf("Something went wrong calling the main service")
-
-			time.Sleep(time.Second * 30)
+		if r.URL.Host == proxy.SecondaryServiceApi {
+			go func() {
+				time.Sleep(time.Second * 30)
+				errCh <- fmt.Errorf("Something went wrong calling the main service")
+			}()
+		} else {
+			resCh <- &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewBuffer([]byte("OK!"))),
+				Header:     http.Header{"Main-Header": {"YES"}},
+			}
 		}
 
 		close(resCh)
