@@ -31,18 +31,10 @@ func (p Proxy) Orchestrate(req *http.Request) (*http.Response, error) {
 
 	subReqCtx, subCtxCancel := context.WithCancel(req.Context())
 
-	mainReq := req.Clone(subReqCtx)
-	mainReq.Host = MainServiceApi
-	mainReq.URL.Host = MainServiceApi
-	mainReq.Body = io.NopCloser(bytes.NewBuffer(body))
-
+	mainReq := prepareRequest(body, req, subReqCtx)
 	mainResCh, mainErrCh := p.caller.Call(mainReq)
 
-	secondaryReq := req.Clone(subReqCtx)
-	secondaryReq.Host = SecondaryServiceApi
-	secondaryReq.URL.Host = SecondaryServiceApi
-	secondaryReq.Body = io.NopCloser(bytes.NewBuffer(body))
-
+	secondaryReq := prepareRequest(body, req, subReqCtx)
 	secondaryResCh, secondaryErrCh := p.caller.Call(secondaryReq)
 
 	for mainResCh != nil || mainErrCh != nil {
@@ -83,6 +75,16 @@ func (p Proxy) Orchestrate(req *http.Request) (*http.Response, error) {
 
 	subCtxCancel()
 	return nil, fmt.Errorf("Fatal failure, main caller didn't return any response.")
+}
+
+func prepareRequest(body []byte, original *http.Request, ctx context.Context) *http.Request {
+	req := original.Clone(ctx)
+
+	req.Host = MainServiceApi
+	req.URL.Host = MainServiceApi
+	req.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	return req
 }
 
 func compareResponses(mainRes *http.Response, mainErr error, secondaryResCh <-chan *http.Response, secondaryErrCh <-chan error) {
